@@ -1,0 +1,103 @@
+# Q. What is this file?
+# A. This file contains options which allow you to configure your multiworld experience while allowing
+#    others to play how they want as well.
+#
+# Q. How do I use it?
+# A. The options in this file are weighted. This means the higher number you assign to a value, the
+#    more chances you have for that option to be chosen. For example, an option like this:
+#
+#    map_shuffle:
+#      on: 5
+#      off: 15
+#
+#    Means for every 5 chances that "on" is chosen, there are 15 chances that "off" is chosen instead.
+#
+# Q. I've never seen a file like this before. What characters am I allowed to use to write it?
+# A. This is a .yaml file. You are allowed to use most characters. If a character is important in
+#    yaml, however, you may need to enclose the text in quotes. This is most relevant for names.
+#    If your name includes a colon, apostrophe, or other similar character, you will need to
+#    enclose the name in quotes.
+
+# Your name in-game. Spaces will be replaced with underscores, and there is a 16 character limit.
+name: Player1
+
+# Used to describe your yaml. Useful if you have multiple files.
+description: A basic template for Super Mario Bros. (NES)
+
+game: Super Mario Bros.
+requires:
+  version: 0.5.0 # Version of Archipelago required for this yaml to work as expected.
+
+Super Mario Bros.:
+  # If enabled, all 8 worlds are generated (32 levels).
+  # If disabled, only World 1 is used (4 levels) -- good for a quick test run.
+  randomize_all_worlds:
+    true: 50
+    false: 0
+
+  # If enabled, collecting coins also grants checks, one every "coin_check_interval"
+  # coins accumulated across the whole run (not per level).
+  coin_checks:
+    true: 0
+    false: 50
+
+  # How many total coins are needed between each Coin Check, if coin_checks is on.
+  coin_check_interval: 50
+
+  # If enabled, getting an extra life (1-Up) inside a level (not the ones the
+  # multiworld sends you) also grants a check.
+  oneup_checks:
+    true: 50
+    false: 0
+
+  # If enabled, stomping enemies also grants checks, one every "kill_check_interval"
+  # stomp kills. NOTE: this only counts kills from jumping on enemies -- fireballs
+  # and shell hits aren't tracked by the game's own counters.
+  kill_checks:
+    true: 0
+    false: 50
+
+  # How many stomp kills are needed between each Kill Check, if kill_checks is on.
+  kill_check_interval: 5
+
+  # If enabled, clearing a level without ever taking damage grants an extra
+  # check for that level.
+  no_hit_checks:
+    true: 0
+    false: 50
+
+  # If enabled, Mario can't stay Super until "Progressive Mushroom" is received
+  # from the multiworld. Grabbing a mushroom before that shrinks you back down
+  # instantly.
+  mushroom_gating:
+    true: 50
+    false: 0
+
+  # Same idea as mushroom_gating, but for the Fire Flower / "Progressive Fire
+  # Flower".
+  fire_flower_gating:
+    true: 50
+    false: 0
+
+  # Same idea again, but for star invincibility / "Progressive Star".
+  star_gating:
+    true: 50
+    false: 0
+
+  # If enabled, Mario's speed is softly capped to a walking pace until
+  # "Progressive Button B" is received. This is an approximation, not a
+  # perfectly solid lock -- brief bursts of extra speed can still slip through.
+  button_b_gating:
+    true: 0
+    false: 50
+
+  # If you die, everyone else connected with Death Link also dies, and vice versa.
+  death_link:
+    true: 0
+    false: 50
+
+  # If you receive a trap (Shrink Trap, Ice Trap, Death Trap), it's also sent to
+  # everyone else connected with Trap Link, and vice versa.
+  trap_link:
+    true: 0
+    false: 50
