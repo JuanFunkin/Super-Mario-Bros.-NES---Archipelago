@@ -29,11 +29,18 @@ requires:
   version: 0.5.0 # Version of Archipelago required for this yaml to work as expected.
 
 Super Mario Bros.:
-  # If enabled, all 8 worlds are generated (32 levels).
-  # If disabled, only World 1 is used (4 levels) -- good for a quick test run.
-  randomize_all_worlds:
-    true: 50
-    false: 0
+  # What you need to do to complete your goal.
+  # beat_the_game: reach the end of World 8.
+  # no_hit_run: reach the end without ever taking a single hit in ANY level of the
+  # entire run. Taking damage anywhere means the goal won't trigger even once you
+  # reach the end -- you'd need a clean run all the way through.
+  # no_skips: reach the end having actually played through every single level --
+  # skipping any of them via a warp zone means the goal won't trigger even if you
+  # reach the end.
+  goal:
+    beat_the_game: 50
+    no_hit_run: 0
+    no_skips: 0
 
   # If enabled, collecting coins also grants checks, one every "coin_check_interval"
   # coins accumulated across the whole run (not per level).
@@ -93,6 +100,15 @@ Super Mario Bros.:
 
   # If you die, everyone else connected with Death Link also dies, and vice versa.
   death_link:
+    true: 0
+    false: 50
+
+  # EXPERIMENTAL. If enabled, clearing a level sends you to a random other
+  # level instead of the vanilla next one -- e.g. clearing 1-1 might send
+  # you straight to 4-3. Works by rewriting the game's level-select RAM,
+  # not by patching the ROM, so it's a bit less rock-solid than everything
+  # else -- expect the occasional rough edge.
+  level_shuffle:
     true: 0
     false: 50
 
