@@ -19,13 +19,12 @@ def no_hit_location_name(world: int, level: int) -> str:
     return f"{world + 1}-{level + 1} No-Hit Clear"
 
 
-def build_location_table(randomize_all_worlds: bool, coin_checks: bool, oneup_checks: bool,
+def build_location_table(coin_checks: bool, oneup_checks: bool,
                           kill_checks: bool = False, no_hit_checks: bool = False) -> Dict[str, int]:
     table: Dict[str, int] = {}
     code = BASE_ID
 
-    worlds = WORLDS if randomize_all_worlds else range(1)
-    for w in worlds:
+    for w in WORLDS:
         for l in LEVELS:
             table[level_location_name(w, l)] = code
             code += 1
@@ -46,7 +45,7 @@ def build_location_table(randomize_all_worlds: bool, coin_checks: bool, oneup_ch
             code += 1
 
     if no_hit_checks:
-        for w in worlds:
+        for w in WORLDS:
             for l in LEVELS:
                 table[no_hit_location_name(w, l)] = code
                 code += 1
@@ -56,7 +55,7 @@ def build_location_table(randomize_all_worlds: bool, coin_checks: bool, oneup_ch
 
 # "Full" table (every possible location) so Archipelago can display location
 # names even for a seed that doesn't use all of them.
-location_table: Dict[str, int] = build_location_table(True, True, True, True, True)
+location_table: Dict[str, int] = build_location_table(True, True, True, True)
 
 LEVEL_TO_LOCATION = {
     (w, l): level_location_name(w, l) for w in WORLDS for l in LEVELS

@@ -55,7 +55,35 @@ class SMB1World(World):
         # the ids the client sent not match what the server expected for
         # this slot -- checks looked like they went through (logged in the
         # client console) but never actually granted anything.
-        pass
+
+        self.level_shuffle_order = None
+        if self.options.level_shuffle.value:
+            self.level_shuffle_order = self._build_level_shuffle()
+
+    def _build_level_shuffle(self) -> List[int]:
+        """Builds a random permutation of all 32 (world, level) slots,
+        encoded as world*4+level, that clearing a level sends you to (see
+        Level Shuffle option). World 8's castle (slot 31) always stays last,
+        as the real ending. Because of how the game's own code handles
+        finishing the 4th level of a world (it always forces a jump to some
+        world's 1st level, no matter what we write), every "world-ending"
+        slot in the shuffle must be immediately followed by a "world-start"
+        slot for the redirect to actually land correctly."""
+        enders = [w * 4 + 3 for w in range(7)]      # world-ending levels, excluding 8-4 itself
+        starters = [w * 4 + 0 for w in range(8)]    # world-starting levels
+        middles = [w * 4 + l for w in range(8) for l in (1, 2)]
+
+        self.random.shuffle(starters)
+        # pair each ender with a starter that must come right after it
+        blocks = [[enders[i], starters[i]] for i in range(len(enders))]
+        spare_starter = starters[len(enders):]  # exactly 1 left over (8 starters - 7 enders)
+
+        units = blocks + [[s] for s in spare_starter] + [[m] for m in middles]
+        self.random.shuffle(units)
+
+        sequence = [slot for unit in units for slot in unit]
+        sequence.append(7 * 4 + 3)  # 8-4 always last: the real ending
+        return sequence
 
     def create_regions(self) -> None:
         create_regions(self)
@@ -90,7 +118,6 @@ class SMB1World(World):
         # their options) -- NOT len(self.location_name_to_id), which is
         # intentionally the fixed full table (see generate_early).
         actual_location_count = len(build_location_table(
-            self.options.randomize_all_worlds.value,
             self.options.coin_checks.value,
             self.options.oneup_checks.value,
             self.options.kill_checks.value,
@@ -106,9 +133,7 @@ class SMB1World(World):
         self.multiworld.itempool.extend(pool)
 
     def set_rules(self) -> None:
-        worlds = WORLDS if self.options.randomize_all_worlds.value else range(1)
-        last_world = list(worlds)[-1]
-        goal_location = f"{last_world + 1}-4 Complete"
+        goal_location = "8-4 Complete"
         self.multiworld.completion_condition[self.player] = lambda state: state.can_reach(
             goal_location, "Location", self.player
         )
@@ -120,6 +145,7 @@ class SMB1World(World):
 
     def fill_slot_data(self) -> Dict[str, Any]:
         return {
+            "goal": self.options.goal.value,
             "coin_checks": self.options.coin_checks.value,
             "coin_check_interval": self.options.coin_check_interval.value,
             "oneup_checks": self.options.oneup_checks.value,
@@ -131,6 +157,7 @@ class SMB1World(World):
             "star_gating": self.options.star_gating.value,
             "button_b_gating": self.options.button_b_gating.value,
             "trap_link": self.options.trap_link.value,
-            "randomize_all_worlds": self.options.randomize_all_worlds.value,
+            "level_shuffle": self.options.level_shuffle.value,
+            "level_shuffle_order": self.level_shuffle_order,
             "death_link": self.options.death_link.value,
         }

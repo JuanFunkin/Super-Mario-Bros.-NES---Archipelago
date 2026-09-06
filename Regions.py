@@ -8,7 +8,6 @@ from .Locations import (
 def create_regions(world) -> None:
     player = world.player
     multiworld = world.multiworld
-    randomize_all = world.options.randomize_all_worlds.value
     coin_checks = world.options.coin_checks.value
     oneup_checks = world.options.oneup_checks.value
     kill_checks = world.options.kill_checks.value
@@ -17,14 +16,13 @@ def create_regions(world) -> None:
     menu = Region("Menu", player, multiworld)
     multiworld.regions.append(menu)
 
-    worlds = WORLDS if randomize_all else range(1)
     previous_region = menu
     level_regions = {}
 
     # SMB1 is linear within each world, and worlds are played in order
-    # (warp zones are ignored for now). We chain the 32 (or 4) locations
-    # one after another: 1-1 -> 1-2 -> 1-3 -> 1-4 -> 2-1 -> ... -> 8-4
-    for w in worlds:
+    # (warp zones are ignored for now). We chain the 32 locations one after
+    # another: 1-1 -> 1-2 -> 1-3 -> 1-4 -> 2-1 -> ... -> 8-4
+    for w in WORLDS:
         for l in LEVELS:
             name = level_location_name(w, l)
             region = Region(name, player, multiworld)
@@ -36,7 +34,7 @@ def create_regions(world) -> None:
             previous_region.connect(region, f"To {name}")
             previous_region = region
 
-    # the last location generated is the goal (8-4 if randomize_all, otherwise 1-4)
+    # the last location generated is the goal: 8-4
 
     # Coin/1-Up/Kill locations: not tied to a specific level (they're global
     # milestones the client reports whenever they happen during the run),
@@ -63,7 +61,7 @@ def create_regions(world) -> None:
     # level's own "Complete" location), since you can only clear it without
     # damage after actually reaching/finishing that level.
     if no_hit_checks:
-        for w in worlds:
+        for w in WORLDS:
             for l in LEVELS:
                 name = no_hit_location_name(w, l)
                 region = level_regions[(w, l)]

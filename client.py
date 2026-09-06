@@ -24,12 +24,16 @@ PLAYER_X_SPEED = 0x0057      # signed byte, horizontal speed
 PLAYER_X_POSITION = 0x0086   # on-screen X position (used for the Ice Trap freeze, more reliable than zeroing speed)
 STAR_INVINCIBLE_TIMER = 0x079F
 STOMP_CHAIN_COUNTER = 0x0484  # increments by 1 on every successful stomp kill, resets on landing
+STAR_FLAG_TASK_CONTROL = 0x0746  # counts 0->5 during a flagpole clear; hits 5 right before LevelNumber advances
+WORLD_END_TIMER = 0x07A1         # counts down after touching the axe in a castle; advance happens once it hits 0
 WALK_CAP_PX_PER_SEC = 90       # approximate walking-speed cap used for Button B Gating's soft correction
 
-# NOTE: intentionally NOT "TrapLink" -- that name could collide with other
-# games' own Trap Link implementations and crash their clients if the data
-# shape doesn't match what they expect. This tag is exclusive to this world.
-TRAP_LINK_TAG = "SMB1TrapLink"
+# Real, cross-game Trap Link tag. Other games (OOT, Tunic, Elden Ring, etc.)
+# also listen on this same tag, so a trap someone receives in this world can
+# now actually reach them, and vice versa. We handle incoming data
+# defensively (see on_package) since we can't control how other games'
+# clients format their payload.
+TRAP_LINK_TAG = "TrapLink"
 
 GAME_MODE_VALUE = 1
 VICTORY_MODE_VALUE = 2
@@ -43,6 +47,7 @@ ICE_TRAP_DURATION = 3.0       # seconds
 STAR_POWER_FRAMES = 0xF0      # ~4 seconds of invincibility when the "Star Power" item is used
 
 TRAP_ITEM_NAMES = {"Shrink Trap", "Ice Trap", "Death Trap"}
+BUTTON_B_SPEED_CAP = 0x19  # approximate walking-speed magnitude used by Button B Gating
 
 
 def _signed(byte: int) -> int:
@@ -89,9 +94,16 @@ class SMB1Client(BizHawkClient):
     took_damage_this_level: bool = False
     last_player_size: int = 1
 
-    # Button B Gating: soft position-based speed correction
-    walk_cap_last_x: int = 0
-    walk_cap_last_time: float = 0.0
+    # no-hit RUN tracking (persists across the whole game, for the
+    # "no_hit_run" goal -- unlike took_damage_this_level, this never resets
+    # between levels)
+    ever_took_damage: bool = False
+    warned_no_hit_goal_failed: bool = False
+
+    # no_skips goal tracking: every (world, level) pair actually played
+    # through and finished, whole game, never reset
+    levels_completed: Set = None
+    warned_no_skips_goal_failed: bool = False
 
     # --- Death Link ---
     death_link: bool = False
@@ -104,6 +116,15 @@ class SMB1Client(BizHawkClient):
     ice_trap_until: float = 0.0
     ice_trap_x: int = 0
     pending_death_trap: bool = False
+
+    # Level Shuffle: guards against redirecting more than once for the same
+    # end-of-level sequence
+    level_shuffle_redirect_done: bool = False
+
+    # Button B Gating: soft position-based speed correction (trims only the
+    # excess distance since the last check, not a hard freeze)
+    walk_cap_last_x: int = 0
+    walk_cap_last_time: float = 0.0
 
     async def validate_rom(self, ctx: "BizHawkClientContext") -> bool:
         from worlds._bizhawk import read, RequestFailedError
@@ -139,23 +160,42 @@ class SMB1Client(BizHawkClient):
             self.death_link = bool(slot_data.get("death_link", False))
             self.trap_link = bool(slot_data.get("trap_link", False))
         elif cmd == "Bounced":
-            tags = args.get("tags", [])
-            data = args.get("data", {}) or {}
-            our_name = ctx.slot_info[ctx.slot].name if ctx.slot is not None else None
+            try:
+                tags = args.get("tags", [])
+                data = args.get("data", {}) or {}
+                our_name = ctx.slot_info[ctx.slot].name if ctx.slot is not None else None
 
-            if "DeathLink" in tags:
-                # ignore the echo of our own death
-                if data.get("source") != our_name:
-                    self.on_deathlink(ctx)
+                if "DeathLink" in tags:
+                    # ignore the echo of our own death
+                    if data.get("source") != our_name:
+                        self.on_deathlink(ctx)
 
-            if TRAP_LINK_TAG in tags and self.trap_link:
-                # ignore the echo of our own trap
-                if data.get("source") != our_name:
-                    trap_name = data.get("trap")
-                    if trap_name in TRAP_ITEM_NAMES:
-                        if self.pending_traps is None:
-                            self.pending_traps = []
-                        self.pending_traps.append(trap_name)
+                if TRAP_LINK_TAG in tags and self.trap_link:
+                    # ignore the echo of our own trap
+                    if data.get("source") != our_name:
+                        # Different games format this differently -- accept
+                        # a few common shapes defensively instead of
+                        # assuming one exact schema (this is also why
+                        # everything here is wrapped in try/except: a
+                        # malformed payload from someone else's client
+                        # should never be able to crash ours).
+                        incoming_names = []
+                        traps_field = data.get("traps")
+                        if isinstance(traps_field, dict):
+                            incoming_names.extend(traps_field.keys())
+                        elif isinstance(traps_field, list):
+                            incoming_names.extend(traps_field)
+                        single_trap = data.get("trap")
+                        if isinstance(single_trap, str):
+                            incoming_names.append(single_trap)
+
+                        for trap_name in incoming_names:
+                            if trap_name in TRAP_ITEM_NAMES:
+                                if self.pending_traps is None:
+                                    self.pending_traps = []
+                                self.pending_traps.append(trap_name)
+            except Exception:
+                logger.debug("Ignored a malformed Bounced package", exc_info=True)
 
     def on_deathlink(self, ctx: "BizHawkClientContext") -> None:
         ctx.last_death_link = time.time()
@@ -173,7 +213,7 @@ class SMB1Client(BizHawkClient):
         await ctx.send_msgs([{
             "cmd": "Bounce",
             "tags": [TRAP_LINK_TAG],
-            "data": {"trap": trap_name, "source": our_name},
+            "data": {"time": time.time(), "source": our_name, "traps": {trap_name: 1}},
         }])
 
     def _refresh_unlocks(self, ctx: "BizHawkClientContext") -> None:
@@ -215,6 +255,7 @@ class SMB1Client(BizHawkClient):
             self.pending_traps = []
 
         slot_data = ctx.slot_data or {}
+        goal = slot_data.get("goal", 0)
         mushroom_gating = slot_data.get("mushroom_gating", True)
         fire_flower_gating = slot_data.get("fire_flower_gating", True)
         star_gating = slot_data.get("star_gating", True)
@@ -238,9 +279,12 @@ class SMB1Client(BizHawkClient):
             (PLAYER_X_SPEED, 1, "RAM"),
             (PLAYER_X_POSITION, 1, "RAM"),
             (STOMP_CHAIN_COUNTER, 1, "RAM"),
+            (STAR_FLAG_TASK_CONTROL, 1, "RAM"),
+            (WORLD_END_TIMER, 1, "RAM"),
         ])
         (world_number, level_number, oper_mode, player_status, player_size, coin_tally,
-         lives, star_timer, x_speed_raw, x_position, stomp_chain) = (r[0] for r in reads)
+         lives, star_timer, x_speed_raw, x_position, stomp_chain,
+         star_flag_task, world_end_timer) = (r[0] for r in reads)
 
         writes = []
 
@@ -262,6 +306,7 @@ class SMB1Client(BizHawkClient):
             if lives < self.last_lives and not self.sending_death_link \
                     and ctx.last_death_link + 1 < time.time():
                 await self.send_deathlink(ctx)
+                self.ever_took_damage = True
             elif lives >= self.last_lives:
                 # a new life is in progress with no losses: clear the flag for the next death
                 self.sending_death_link = False
@@ -270,6 +315,41 @@ class SMB1Client(BizHawkClient):
         # function now, after we've read any newly-received items -- see
         # below -- so both "found it myself" and "someone sent it to me"
         # apply in the exact same tick instead of one being delayed.)
+
+        # ---------- 0.7) Level Shuffle: redirect to a random next level ----------
+        # IMPORTANT: OperMode does NOT switch to "Victory Mode" for regular
+        # level clears (that value is essentially unused outside the very
+        # end of the game) -- that was the bug in the first version of this
+        # feature. The real signal the game uses internally is different
+        # depending on how you cleared the level:
+        #   - flagpole: StarFlagTaskControl counts 0 -> 5 over the walk to
+        #     the castle; LevelNumber only actually advances once it hits 5.
+        #   - castle/axe: WorldEndTimer counts down after touching the axe;
+        #     the world/level advance only happens once it reaches 0.
+        # So we write our redirect as soon as either counter starts moving
+        # (nonzero), well before it reaches the point where the game reads
+        # WorldNumber/LevelNumber to load whatever's next.
+        end_of_level_in_progress = star_flag_task > 0 or world_end_timer > 0
+        if not end_of_level_in_progress:
+            self.level_shuffle_redirect_done = False
+        elif slot_data.get("level_shuffle", False) and not self.level_shuffle_redirect_done:
+            self.level_shuffle_redirect_done = True
+            shuffle_order = slot_data.get("level_shuffle_order")
+            completed_slot = world_number * 4 + level_number
+            if shuffle_order and completed_slot != FINAL_WORLD * 4 + FINAL_LEVEL and completed_slot in shuffle_order:
+                pos = shuffle_order.index(completed_slot)
+                if pos + 1 < len(shuffle_order):
+                    target_slot = shuffle_order[pos + 1]
+                    target_world, target_level = divmod(target_slot, 4)
+                    if level_number == 3:
+                        write_world = (target_world - 1) % 256
+                        write_level = level_number  # irrelevant -- forced to 0 by the game regardless
+                    else:
+                        write_world = target_world
+                        write_level = (target_level - 1) % 256
+                    writes.append((WORLD_NUMBER, bytes([write_world]), "RAM"))
+                    writes.append((LEVEL_NUMBER, bytes([write_level]), "RAM"))
+                    logger.info(f"Level Shuffle: redirecting to {target_world + 1}-{target_level + 1}")
 
         # ---------- 1) Check for level completion ----------
         # We detect this by watching (WorldNumber, LevelNumber) while actually
@@ -280,6 +360,9 @@ class SMB1Client(BizHawkClient):
         if oper_mode == GAME_MODE_VALUE:
             if self.last_level_pair is not None and current_pair != self.last_level_pair:
                 completed_pair = self.last_level_pair
+                if self.levels_completed is None:
+                    self.levels_completed = set()
+                self.levels_completed.add(completed_pair)
                 if completed_pair in LEVEL_TO_LOCATION:
                     location_name = LEVEL_TO_LOCATION[completed_pair]
                     location_id = location_table.get(location_name)
@@ -326,24 +409,20 @@ class SMB1Client(BizHawkClient):
                 writes.append((STAR_INVINCIBLE_TIMER, bytes([0]), "RAM"))
                 logger.info("Ability Gating: star not unlocked, invincibility cancelled")
 
-            # Button B Gating: soft correction. Rather than fighting the
-            # game's own per-frame controller reading (which never worked
-            # reliably), we measure how far Mario actually moved between
-            # our checks and, if it's more than a normal walking pace would
-            # allow for that time gap, pull him back by the excess. This
-            # can't be a perfect block (a burst of extra speed can slip
-            # through between checks), but it meaningfully slows down
-            # sustained running instead of doing nothing at all.
+            # Button B Gating: clamping speed directly doesn't work -- the
+            # game recalculates it from the held buttons every single frame,
+            # far faster than we can poll, so the correction never has any
+            # visible effect. What DOES work is measuring how far Mario
+            # actually moved between our checks and trimming back just the
+            # excess if it's more than a normal walk would cover in that
+            # time -- small, incremental correction, not a hard freeze.
             if button_b_gating and not self.button_b_unlocked:
                 now = time.time()
                 if self.walk_cap_last_time == 0.0:
-                    # first tick under gating: nothing to compare against yet
                     self.walk_cap_last_x = x_position
                     self.walk_cap_last_time = now
                 else:
                     dt = min(now - self.walk_cap_last_time, 0.5)
-                    # signed short delta, robust to the on-screen X byte
-                    # wrapping around as the camera scrolls
                     diff = ((x_position - self.walk_cap_last_x + 128) % 256) - 128
                     max_allowed = WALK_CAP_PX_PER_SEC * dt
                     if abs(diff) > max_allowed:
@@ -356,8 +435,6 @@ class SMB1Client(BizHawkClient):
                         self.walk_cap_last_x = x_position
                     self.walk_cap_last_time = now
             else:
-                # not currently gated: reset so we don't apply a stale,
-                # huge time gap the next time gating becomes relevant
                 self.walk_cap_last_time = 0.0
 
         # ---------- 2.5) No-Hit Clear tracking ----------
@@ -366,6 +443,7 @@ class SMB1Client(BizHawkClient):
         if oper_mode == GAME_MODE_VALUE:
             if player_size == 1 and self.last_player_size == 0 and not gating_forced_shrink_this_tick:
                 self.took_damage_this_level = True
+                self.ever_took_damage = True
             self.last_player_size = player_size
 
         # ---------- 3) Coin checks (total accumulated, optional) ----------
@@ -484,14 +562,46 @@ class SMB1Client(BizHawkClient):
             await write(ctx.bizhawk_ctx, writes)
 
         # ---------- 6) Goal ----------
-        if oper_mode == VICTORY_MODE_VALUE and world_number == FINAL_WORLD and level_number == FINAL_LEVEL:
+        final_world = FINAL_WORLD
+        final_level = FINAL_LEVEL
+        if oper_mode == VICTORY_MODE_VALUE and world_number == final_world and level_number == final_level:
+            if self.levels_completed is None:
+                self.levels_completed = set()
+            self.levels_completed.add((final_world, final_level))
+
             # make sure the final level's location is checked off too, not just the goal status
-            final_location_name = LEVEL_TO_LOCATION.get((FINAL_WORLD, FINAL_LEVEL))
+            final_location_name = LEVEL_TO_LOCATION.get((final_world, final_level))
             final_location_id = location_table.get(final_location_name) if final_location_name else None
             if final_location_id and final_location_id not in ctx.checked_locations:
                 logger.info(f"Check: {final_location_name}")
                 await ctx.send_msgs([{"cmd": "LocationChecks", "locations": [final_location_id]}])
 
             if not ctx.finished_game:
-                await ctx.send_msgs([{"cmd": "StatusUpdate", "status": ClientStatus.CLIENT_GOAL}])
-                ctx.finished_game = True
+                if goal == 1 and self.ever_took_damage:
+                    # no_hit_run goal, but damage was taken at some point in
+                    # this run -- the goal condition wasn't met, even though
+                    # you reached the end. Doesn't send CLIENT_GOAL.
+                    if not self.warned_no_hit_goal_failed:
+                        logger.info(
+                            "Reached the end, but your goal is 'No-Hit Run' and you took "
+                            "damage earlier in the run -- goal not completed. You'd need "
+                            "a clean run through the entire game with no hits."
+                        )
+                        self.warned_no_hit_goal_failed = True
+                elif goal == 2:
+                    required_count = (final_world + 1) * 4
+                    if len(self.levels_completed) < required_count:
+                        if not self.warned_no_skips_goal_failed:
+                            missing = required_count - len(self.levels_completed)
+                            logger.info(
+                                f"Reached the end, but your goal is 'No Skips' and you skipped "
+                                f"{missing} level(s) along the way (likely via a warp zone) -- "
+                                f"goal not completed. You'd need to play through every level."
+                            )
+                            self.warned_no_skips_goal_failed = True
+                    else:
+                        await ctx.send_msgs([{"cmd": "StatusUpdate", "status": ClientStatus.CLIENT_GOAL}])
+                        ctx.finished_game = True
+                else:
+                    await ctx.send_msgs([{"cmd": "StatusUpdate", "status": ClientStatus.CLIENT_GOAL}])
+                    ctx.finished_game = True
